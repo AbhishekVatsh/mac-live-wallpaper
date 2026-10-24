@@ -425,6 +425,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let menu = NSMenu()
         menu.delegate = self
         statusItem.menu = menu
+        NSApp.mainMenu = makeMainMenu()
 
         enableStartAtLoginByDefault()
 
@@ -456,6 +457,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if SMAppService.mainApp.status == .enabled || (try? SMAppService.mainApp.register()) != nil {
             UserDefaults.standard.set(true, forKey: key)
         }
+    }
+
+    /// The app menu bar. The Edit menu is what makes ⌘X, ⌘C, ⌘V and ⌘A work in the link box.
+    private func makeMainMenu() -> NSMenu {
+        let main = NSMenu()
+
+        let appMenu = NSMenu()
+        appMenu.addItem(withTitle: "About Mac Live Wallpaper", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
+        appMenu.addItem(.separator())
+        appMenu.addItem(withTitle: "Choose Video…", action: #selector(chooseVideo), keyEquivalent: "o").target = self
+        appMenu.addItem(withTitle: "Uninstall…", action: #selector(uninstall), keyEquivalent: "").target = self
+        appMenu.addItem(.separator())
+        appMenu.addItem(withTitle: "Hide Mac Live Wallpaper", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
+        appMenu.addItem(.separator())
+        appMenu.addItem(withTitle: "Exit Mac Live Wallpaper", action: #selector(exit), keyEquivalent: "q").target = self
+        main.addItem(withTitle: "", action: nil, keyEquivalent: "").submenu = appMenu
+
+        let edit = NSMenu(title: "Edit")
+        edit.addItem(withTitle: "Undo", action: Selector(("undo:")), keyEquivalent: "z")
+        edit.addItem(withTitle: "Redo", action: Selector(("redo:")), keyEquivalent: "Z")
+        edit.addItem(.separator())
+        edit.addItem(withTitle: "Cut", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
+        edit.addItem(withTitle: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
+        edit.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
+        edit.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+        main.addItem(withTitle: "Edit", action: nil, keyEquivalent: "").submenu = edit
+
+        let windowMenu = NSMenu(title: "Window")
+        windowMenu.addItem(withTitle: "Minimize", action: #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: "m")
+        windowMenu.addItem(withTitle: "Close", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
+        main.addItem(withTitle: "Window", action: nil, keyEquivalent: "").submenu = windowMenu
+        NSApp.windowsMenu = windowMenu
+
+        return main
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
@@ -731,5 +766,5 @@ others.filter { !$0.isTerminated }.forEach { $0.forceTerminate() }
 let app = NSApplication.shared
 let delegate = AppDelegate()
 app.delegate = delegate
-app.setActivationPolicy(.accessory)
+app.setActivationPolicy(.regular)
 app.run()
