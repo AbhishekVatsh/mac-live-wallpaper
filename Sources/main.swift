@@ -32,11 +32,161 @@ enum Store {
     static func importVideo(from source: URL) throws -> URL {
         let dest = folder.appendingPathComponent("wallpaper-\(Int(Date().timeIntervalSince1970)).\(source.pathExtension)")
         try FileManager.default.copyItem(at: source, to: dest)
-        // Remove previously imported videos and stills.
+        // Remove previously imported videos and stills (but not the tools folder).
         if let old = try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil) {
-            for file in old where file != dest { try? FileManager.default.removeItem(at: file) }
+            for file in old where file != dest && !file.hasDirectoryPath { try? FileManager.default.removeItem(at: file) }
         }
         return dest
+    }
+}
+
+// MARK: - YouTube links
+
+/// Downloads YouTube videos with yt-dlp, which the app fetches from its official
+/// GitHub release the first time it's needed and keeps up to date.
+final class YouTubeDownloader {
+    enum Failure: LocalizedError {
+        case message(String)
+        var errorDescription: String? { if case .message(let text) = self { return text }; return nil }
+    }
+
+    private static let toolURL = Store.folder.appendingPathComponent("bin/yt-dlp")
+    private static let releaseURL = URL(string: "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_macos")!
+    // Video only (wallpapers are silent), H.264 up to 1080p so every Mac plays it smoothly.
+    private static let format = "bv*[vcodec^=avc1][height<=1080][protocol^=http]/bv*[vcodec^=avc1][height<=1080]/b[ext=mp4]"
+
+    private var process: Process?
+
+    static func isYouTubeLink(_ text: String) -> Bool {
+        guard let host = URL(string: text.trimmingCharacters(in: .whitespaces))?.host?.lowercased() else { return false }
+        return host == "youtu.be" || host == "youtube.com" || host.hasSuffix(".youtube.com")
+    }
+
+    /// Calls `progress` with status text on the main queue, then `completion` with the downloaded file.
+    func download(_ link: String, progress: @escaping (String) -> Void,
+                  completion: @escaping (Result<URL, Error>) -> Void) {
+        let finish = { (result: Result<URL, Error>) in DispatchQueue.main.async { completion(result) } }
+        let report = { (text: String) in DispatchQueue.main.async { progress(text) } }
+
+        prepareTool(report: report) { [weak self] error in
+            if let error { return finish(.failure(error)) }
+            self?.run(link, report: report, finish: finish)
+        }
+    }
+
+    func cancel() { process?.terminate() }
+
+    private func prepareTool(report: @escaping (String) -> Void, then: @escaping (Error?) -> Void) {
+        let fm = FileManager.default
+        let tool = Self.toolURL
+        if fm.fileExists(atPath: tool.path) {
+            // YouTube changes often, so refresh yt-dlp if it's more than a few days old.
+            let modified = (try? fm.attributesOfItem(atPath: tool.path)[.modificationDate] as? Date) ?? .distantPast
+            if Date().timeIntervalSince(modified) > 3 * 24 * 3600 {
+                report("Updating the YouTube downloader…")
+                DispatchQueue.global(qos: .userInitiated).async {
+                    let update = Process()
+                    update.executableURL = tool
+                    update.arguments = ["--update"]
+                    update.standardOutput = FileHandle.nullDevice
+                    update.standardError = FileHandle.nullDevice
+                    try? update.run()
+                    update.waitUntilExit()
+                    try? fm.setAttributes([.modificationDate: Date()], ofItemAtPath: tool.path)
+                    then(nil)
+                }
+            } else {
+                then(nil)
+            }
+            return
+        }
+
+        report("Getting the YouTube downloader (one time, about 35 MB)…")
+        URLSession.shared.downloadTask(with: Self.releaseURL) { temp, response, error in
+            guard let temp, (response as? HTTPURLResponse)?.statusCode == 200 else {
+                return then(Failure.message("Couldn't download the YouTube downloader. Check your internet connection and try again.\n\(error?.localizedDescription ?? "")"))
+            }
+            do {
+                try fm.createDirectory(at: tool.deletingLastPathComponent(), withIntermediateDirectories: true)
+                try? fm.removeItem(at: tool)
+                try fm.moveItem(at: temp, to: tool)
+                try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: tool.path)
+                then(nil)
+            } catch {
+                then(error)
+            }
+        }.resume()
+    }
+
+    private func run(_ link: String, report: @escaping (String) -> Void, finish: @escaping (Result<URL, Error>) -> Void) {
+        let outDir = FileManager.default.temporaryDirectory.appendingPathComponent("LiveWallpaper-\(UUID().uuidString)")
+        try? FileManager.default.createDirectory(at: outDir, withIntermediateDirectories: true)
+
+        let p = Process()
+        p.executableURL = Self.toolURL
+        p.arguments = [
+            "--no-config", "--no-playlist", "--no-part", "--newline",
+            "-f", Self.format,
+            "-o", outDir.appendingPathComponent("%(title).80B.%(ext)s").path,
+            "--progress-template", "download:PROGRESS %(progress._percent_str)s",
+            link.trimmingCharacters(in: .whitespaces),
+        ]
+        // Let yt-dlp find a JavaScript runtime such as Homebrew's deno, if one is installed.
+        var env = ProcessInfo.processInfo.environment
+        env["PATH"] = "/opt/homebrew/bin:/usr/local/bin:" + (env["PATH"] ?? "/usr/bin:/bin")
+        p.environment = env
+
+        let out = Pipe(), err = Pipe()
+        p.standardOutput = out
+        p.standardError = err
+        var buffer = ""
+        out.fileHandleForReading.readabilityHandler = { handle in
+            buffer += String(decoding: handle.availableData, as: UTF8.self)
+            while let newline = buffer.firstIndex(of: "\n") {
+                let line = String(buffer[..<newline]).trimmingCharacters(in: .whitespaces)
+                buffer.removeSubrange(...newline)
+                if line.hasPrefix("PROGRESS ") {
+                    report("Downloading… \(line.dropFirst(9).trimmingCharacters(in: .whitespaces))")
+                }
+            }
+        }
+        let errors = NSMutableString()
+        err.fileHandleForReading.readabilityHandler = { handle in
+            errors.append(String(decoding: handle.availableData, as: UTF8.self))
+        }
+
+        p.terminationHandler = { [weak self] proc in
+            out.fileHandleForReading.readabilityHandler = nil
+            err.fileHandleForReading.readabilityHandler = nil
+            errors.append(String(decoding: err.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self))
+            // Keep yt-dlp's messages from the last download for troubleshooting.
+            let log = "\(Date())\n\(link)\nexit \(proc.terminationStatus) (\(proc.terminationReason == .exit ? "exit" : "signal"))\n\n\(errors)"
+            try? log.write(to: Self.toolURL.deletingLastPathComponent().appendingPathComponent("last-download.log"),
+                           atomically: true, encoding: .utf8)
+            self?.process = nil
+            if proc.terminationReason == .uncaughtSignal {
+                try? FileManager.default.removeItem(at: outDir)
+                return finish(.failure(Failure.message("Download cancelled.")))
+            }
+            let file = (try? FileManager.default.contentsOfDirectory(at: outDir, includingPropertiesForKeys: nil))?.first
+            if proc.terminationStatus == 0, let file {
+                finish(.success(file))
+            } else {
+                try? FileManager.default.removeItem(at: outDir)
+                let reason = (errors as String).split(separator: "\n").last { $0.hasPrefix("ERROR") }
+                    .map { String($0.dropFirst("ERROR: ".count)) } ?? "yt-dlp exited with code \(proc.terminationStatus)."
+                finish(.failure(Failure.message("Couldn't download that video.\n\n\(reason)")))
+            }
+        }
+
+        do {
+            report("Starting download…")
+            try p.run()
+            process = p
+        } catch {
+            try? FileManager.default.removeItem(at: outDir)
+            finish(.failure(error))
+        }
     }
 }
 
@@ -88,7 +238,7 @@ final class WallpaperController {
     @objc private func screensChanged() { rebuildWindows() }
 
     private func rebuildWindows() {
-        windows.forEach { $0.orderOut(nil) }
+        windows.forEach { $0.close() }
         windows.removeAll()
         guard let player else { return }
 
@@ -249,6 +399,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var statusItem: NSStatusItem!
     private var window: NSWindow?
     private var dropView: DropView?
+    private var linkField: NSTextField?
+    private var youTubeButton: NSButton?
+    private var youTubeStatus: NSTextField?
+    private var youTube: YouTubeDownloader?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
@@ -265,6 +419,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             setStillWallpaper(from: video)
         } else {
             showWindow()
+        }
+
+        // `open -a "Mac Live Wallpaper" --args --youtube <link>` sets a YouTube video without clicking.
+        let args = CommandLine.arguments
+        if let i = args.firstIndex(of: "--youtube"), i + 1 < args.count {
+            showWindow()
+            linkField?.stringValue = args[i + 1]
+            youTubeButtonClicked()
         }
     }
 
@@ -304,7 +466,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc func showWindow() {
         if window == nil {
-            let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 420, height: 350),
+            let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 440, height: 480),
                              styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: false)
             w.title = "Mac Live Wallpaper"
             w.isReleasedWhenClosed = false
@@ -316,8 +478,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
             let button = NSButton(title: "Choose Video…", target: self, action: #selector(chooseVideo))
             button.bezelStyle = .rounded
-            button.keyEquivalent = "\r"
             button.translatesAutoresizingMaskIntoConstraints = false
+
+            let youTubeTitle = NSTextField(labelWithString: "Or paste a YouTube link")
+            youTubeTitle.font = .boldSystemFont(ofSize: 13)
+            youTubeTitle.translatesAutoresizingMaskIntoConstraints = false
+
+            let field = NSTextField()
+            field.placeholderString = "https://www.youtube.com/watch?v=…"
+            field.target = self
+            field.action = #selector(youTubeButtonClicked)
+            field.setContentHuggingPriority(.defaultLow, for: .horizontal)
+
+            let setButton = NSButton(title: "Set as Wallpaper", target: self, action: #selector(youTubeButtonClicked))
+            setButton.bezelStyle = .rounded
+            setButton.setContentHuggingPriority(.required, for: .horizontal)
+
+            let row = NSStackView(views: [field, setButton])
+            row.spacing = 8
+            row.translatesAutoresizingMaskIntoConstraints = false
+
+            let status = NSTextField(wrappingLabelWithString: "Downloads the video in up to 1080p, without sound.")
+            status.font = .systemFont(ofSize: 11)
+            status.textColor = .secondaryLabelColor
+            status.translatesAutoresizingMaskIntoConstraints = false
 
             let hint = NSTextField(wrappingLabelWithString: "The video loops silently behind your desktop icons. Use the menu bar icon to pause it.")
             hint.font = .systemFont(ofSize: 11)
@@ -332,15 +516,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             actions.translatesAutoresizingMaskIntoConstraints = false
 
             let content = NSView()
-            [drop, button, hint, actions].forEach(content.addSubview)
+            [drop, button, youTubeTitle, row, status, hint, actions].forEach(content.addSubview)
             NSLayoutConstraint.activate([
                 drop.topAnchor.constraint(equalTo: content.topAnchor, constant: 20),
                 drop.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 20),
                 drop.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -20),
-                drop.heightAnchor.constraint(equalToConstant: 160),
-                button.topAnchor.constraint(equalTo: drop.bottomAnchor, constant: 16),
+                drop.heightAnchor.constraint(equalToConstant: 150),
+                button.topAnchor.constraint(equalTo: drop.bottomAnchor, constant: 14),
                 button.centerXAnchor.constraint(equalTo: content.centerXAnchor),
-                hint.topAnchor.constraint(equalTo: button.bottomAnchor, constant: 12),
+                youTubeTitle.topAnchor.constraint(equalTo: button.bottomAnchor, constant: 26),
+                youTubeTitle.leadingAnchor.constraint(equalTo: drop.leadingAnchor),
+                row.topAnchor.constraint(equalTo: youTubeTitle.bottomAnchor, constant: 8),
+                row.leadingAnchor.constraint(equalTo: drop.leadingAnchor),
+                row.trailingAnchor.constraint(equalTo: drop.trailingAnchor),
+                status.topAnchor.constraint(equalTo: row.bottomAnchor, constant: 6),
+                status.leadingAnchor.constraint(equalTo: drop.leadingAnchor),
+                status.trailingAnchor.constraint(equalTo: drop.trailingAnchor),
+                hint.topAnchor.constraint(greaterThanOrEqualTo: status.bottomAnchor, constant: 20),
+                hint.bottomAnchor.constraint(equalTo: actions.topAnchor, constant: -14),
                 hint.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 30),
                 hint.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -30),
                 actions.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -20),
@@ -349,8 +542,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             w.contentView = content
             window = w
             dropView = drop
+            linkField = field
+            youTubeButton = setButton
+            youTubeStatus = status
         }
-        if let video = Store.currentVideo {
+        if let video = Store.currentVideo, youTube == nil {
             dropView?.setText("Current: \(video.lastPathComponent)\n\nDrop a new video to replace it")
         }
         NSApp.activate(ignoringOtherApps: true)
@@ -366,9 +562,46 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if panel.runModal() == .OK, let url = panel.url { apply(url) }
     }
 
-    private func apply(_ source: URL) {
+    @objc func youTubeButtonClicked() {
+        // While a download runs, the button reads Cancel.
+        if let youTube { youTube.cancel(); return }
+
+        let link = linkField?.stringValue.trimmingCharacters(in: .whitespaces) ?? ""
+        guard YouTubeDownloader.isYouTubeLink(link) else {
+            youTubeStatus?.stringValue = "Paste a YouTube link, like https://www.youtube.com/watch?v=…"
+            youTubeStatus?.textColor = .systemRed
+            return
+        }
+
+        let downloader = YouTubeDownloader()
+        youTube = downloader
+        youTubeButton?.title = "Cancel"
+        linkField?.isEnabled = false
+        youTubeStatus?.textColor = .secondaryLabelColor
+
+        downloader.download(link, progress: { [weak self] text in
+            self?.youTubeStatus?.stringValue = text
+        }, completion: { [weak self] result in
+            guard let self else { return }
+            self.youTube = nil
+            self.youTubeButton?.title = "Set as Wallpaper"
+            self.linkField?.isEnabled = true
+            switch result {
+            case .success(let file):
+                self.youTubeStatus?.stringValue = "Downloaded. Setting it as your wallpaper…"
+                self.apply(file, removeSourceAfter: true)
+                self.linkField?.stringValue = ""
+            case .failure(let error):
+                self.youTubeStatus?.stringValue = error.localizedDescription
+                self.youTubeStatus?.textColor = .systemRed
+            }
+        })
+    }
+
+    private func apply(_ source: URL, removeSourceAfter: Bool = false) {
         dropView?.setText("Importing \(source.lastPathComponent)…")
         DispatchQueue.global(qos: .userInitiated).async {
+            defer { if removeSourceAfter { try? FileManager.default.removeItem(at: source.deletingLastPathComponent()) } }
             do {
                 let imported = try Store.importVideo(from: source)
                 DispatchQueue.main.async {
@@ -377,6 +610,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     self.wallpaper.load(imported)
                     setStillWallpaper(from: imported)
                     self.dropView?.setText("Now playing: \(source.lastPathComponent)\n\nDrop a new video to replace it")
+                    if removeSourceAfter { self.youTubeStatus?.stringValue = "Now playing: \(source.deletingPathExtension().lastPathComponent)" }
                 }
             } catch {
                 DispatchQueue.main.async {

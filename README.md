@@ -10,7 +10,15 @@ Paste this into Terminal:
 curl -fsSL https://raw.githubusercontent.com/AbhishekVatsh/mac-live-wallpaper/main/install.sh | bash
 ```
 
-It downloads the latest release, installs it in Applications and opens it. Then drop a video (.mp4 or .mov) onto the window, or click **Choose Video…**.
+It downloads the latest release, installs it in Applications and opens it. Then drop a video (.mp4 or .mov) onto the window, click **Choose Video…**, or paste a YouTube link.
+
+## YouTube links
+
+Paste a YouTube link into **Or paste a YouTube link** and click **Set as Wallpaper**. The app downloads the video (up to 1080p, without sound) and sets it as your wallpaper. Click **Cancel** to stop a download.
+
+The first time, the app downloads [yt-dlp](https://github.com/yt-dlp/yt-dlp) (about 35 MB) from its official GitHub release, and it keeps yt-dlp up to date after that. If a download fails, yt-dlp's messages are in `~/Library/Application Support/LiveWallpaper/bin/last-download.log`.
+
+Only use videos you have the right to download.
 
 You can also download `MacLiveWallpaper.dmg` from the [Releases](https://github.com/AbhishekVatsh/mac-live-wallpaper/releases) page and drag the app into Applications. The app isn't notarized by Apple, so when it's installed this way, macOS blocks the first launch. Allow it once in **System Settings → Privacy & Security → Open Anyway**.
 
