@@ -418,6 +418,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var youTubeButton: NSButton?
     private var youTubeStatus: NSTextField?
     private var youTube: YouTubeDownloader?
+    private var loginCheckbox: NSButton?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
@@ -426,6 +427,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.delegate = self
         statusItem.menu = menu
         NSApp.mainMenu = makeMainMenu()
+        DistributedNotificationCenter.default().addObserver(forName: exitRequest, object: nil, queue: .main) { [weak self] note in
+            if (note.object as? String) != "\(ProcessInfo.processInfo.processIdentifier)" { self?.exit() }
+        }
 
         enableStartAtLoginByDefault()
 
@@ -515,8 +519,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc func showWindow() {
+        // Bring the Dock icon back if Quit from the Dock moved the app to the background.
+        NSApp.setActivationPolicy(.regular)
         if window == nil {
-            let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 440, height: 480),
+            let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 440, height: 510),
                              styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: false)
             w.title = "Mac Live Wallpaper"
             w.isReleasedWhenClosed = false
@@ -559,11 +565,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             status.textColor = .secondaryLabelColor
             status.translatesAutoresizingMaskIntoConstraints = false
 
-            let hint = NSTextField(wrappingLabelWithString: "The video loops silently behind your desktop icons. Use the menu bar icon to pause it.")
+            let hint = NSTextField(wrappingLabelWithString: "The video loops silently behind your desktop icons, even after you close this window or quit from the Dock. Use Exit to stop it.")
             hint.font = .systemFont(ofSize: 11)
             hint.textColor = .secondaryLabelColor
             hint.alignment = .center
             hint.translatesAutoresizingMaskIntoConstraints = false
+
+            let login = NSButton(checkboxWithTitle: "Start at Login", target: self, action: #selector(toggleLoginItem))
+            login.translatesAutoresizingMaskIntoConstraints = false
 
             let exit = NSButton(title: "Exit", target: self, action: #selector(exit))
             let remove = NSButton(title: "Uninstall…", target: self, action: #selector(uninstall))
@@ -572,7 +581,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             actions.translatesAutoresizingMaskIntoConstraints = false
 
             let content = NSView()
-            [drop, button, youTubeTitle, row, status, hint, actions].forEach(content.addSubview)
+            [drop, button, youTubeTitle, row, status, hint, login, actions].forEach(content.addSubview)
             NSLayoutConstraint.activate([
                 drop.topAnchor.constraint(equalTo: content.topAnchor, constant: 20),
                 drop.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 20),
@@ -589,7 +598,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 status.leadingAnchor.constraint(equalTo: drop.leadingAnchor),
                 status.trailingAnchor.constraint(equalTo: drop.trailingAnchor),
                 hint.topAnchor.constraint(greaterThanOrEqualTo: status.bottomAnchor, constant: 20),
-                hint.bottomAnchor.constraint(equalTo: actions.topAnchor, constant: -14),
+                hint.bottomAnchor.constraint(equalTo: login.topAnchor, constant: -14),
+                login.bottomAnchor.constraint(equalTo: actions.topAnchor, constant: -14),
+                login.centerXAnchor.constraint(equalTo: content.centerXAnchor),
                 hint.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 30),
                 hint.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -30),
                 actions.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -20),
@@ -601,10 +612,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             linkField = field
             youTubeButton = setButton
             youTubeStatus = status
+            loginCheckbox = login
         }
         if let video = Store.currentVideo, youTube == nil {
             dropView?.setText("Current: \(video.lastPathComponent)\n\nDrop a new video to replace it")
         }
+        refreshLoginCheckbox()
         NSApp.activate(ignoringOtherApps: true)
         window?.makeKeyAndOrderFront(nil)
     }
@@ -700,13 +713,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             alert.informativeText = "Move Mac Live Wallpaper to your Applications folder and try again."
             alert.runModal()
         }
+        refreshLoginCheckbox()
     }
 
+    private func refreshLoginCheckbox() {
+        loginCheckbox?.state = SMAppService.mainApp.status == .enabled ? .on : .off
+    }
+
+    /// Set by Exit and Uninstall, the only ways (besides logging out) that really stop the app.
+    private var exiting = false
+
     @objc func exit() {
+        exiting = true
         NSApp.terminate(nil)
     }
 
-    /// However the app quits (Exit, ⌘Q, logout), put back the wallpaper the user had before.
+    /// Quit from the Dock (or Activity Monitor) only hides the app: the wallpaper keeps
+    /// playing and the app stays in the menu bar. Exit, Uninstall, and logging out,
+    /// restarting or shutting down really quit.
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        if exiting { return .terminateNow }
+        if let event = NSAppleEventManager.shared().currentAppleEvent,
+           event.eventID == kAEQuitApplication,
+           event.attributeDescriptor(forKeyword: kAEQuitReason) != nil
+            || event.paramDescriptor(forKeyword: kAEQuitReason) != nil {
+            return .terminateNow
+        }
+        moveToBackground()
+        return .terminateCancel
+    }
+
+    private func moveToBackground() {
+        window?.close()
+        NSApp.setActivationPolicy(.accessory)
+    }
+
+    /// However the app really quits (Exit, logout), put back the wallpaper the user had before.
     func applicationWillTerminate(_ notification: Notification) {
         wallpaper.pause()
         PreviousWallpaper.restore()
@@ -745,23 +787,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         try? fm.removeItem(at: Store.folder)
         if let id = Bundle.main.bundleIdentifier { UserDefaults.standard.removePersistentDomain(forName: id) }
 
+        exiting = true
         NSWorkspace.shared.recycle([Bundle.main.bundleURL]) { _, _ in
             DispatchQueue.main.async { NSApp.terminate(nil) }
         }
     }
 }
 
+let exitRequest = Notification.Name("com.abhishek.livewallpaper.exit")
+
 // Only one copy may run, or two different videos could play at once. A newly opened
 // copy (say, from the DMG or a newer install) takes over from any copy already running.
 let me = ProcessInfo.processInfo.processIdentifier
 let others = NSRunningApplication.runningApplications(withBundleIdentifier: Bundle.main.bundleIdentifier ?? "")
     .filter { $0.processIdentifier != me }
-others.forEach { $0.terminate() }
-let deadline = Date().addingTimeInterval(5)
-while others.contains(where: { !$0.isTerminated }) && Date() < deadline {
-    RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+if !others.isEmpty {
+    // Ask running copies to Exit (a plain quit would only move them to the background).
+    // Versions before 1.6 don't listen for this, so they also get a normal quit.
+    DistributedNotificationCenter.default().postNotificationName(exitRequest, object: "\(me)",
+                                                                 userInfo: nil, deliverImmediately: true)
+    others.forEach { $0.terminate() }
+    let deadline = Date().addingTimeInterval(5)
+    while others.contains(where: { !$0.isTerminated }) && Date() < deadline {
+        RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+    }
+    others.filter { !$0.isTerminated }.forEach { $0.forceTerminate() }
 }
-others.filter { !$0.isTerminated }.forEach { $0.forceTerminate() }
 
 let app = NSApplication.shared
 let delegate = AppDelegate()

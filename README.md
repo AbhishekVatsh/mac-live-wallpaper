@@ -26,9 +26,10 @@ Only use videos you have the right to download.
 
 ## Use
 
-The menu bar icon lets you choose a new video, pause or play, and turn Start at Login on or off.
+The app shows in the Dock and the menu bar. From the menu bar icon you can choose a new video, pause or play, and turn Start at Login on or off. The app window also has a **Start at Login** checkbox.
 
-- **Exit** (in the menu bar icon or the app window, or ⌘Q) quits the app and puts back the wallpaper you had before. The app starts again at your next login if Start at Login is on.
+- **Closing the window or choosing Quit from the Dock** keeps the wallpaper playing in the background. The Dock icon goes away, and the menu bar icon stays. Open the app again to bring back the window.
+- **Exit** (in the app window, the app menu, the menu bar icon, or ⌘Q) really quits and puts back the wallpaper you had before. The app starts again at your next login if Start at Login is on.
 - **Uninstall…** removes the app completely: it stops the wallpaper, puts back your previous wallpaper, removes the login item, deletes the imported video and settings, and moves the app to the Bin.
 
 ## Build from source
