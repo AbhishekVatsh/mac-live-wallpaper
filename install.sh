@@ -18,9 +18,11 @@ echo "Installing to /Applications..."
 mkdir -p "$MOUNT"
 hdiutil attach -nobrowse -quiet -mountpoint "$MOUNT" "$TMP/MacLiveWallpaper.dmg"
 pkill -x MacLiveWallpaper 2>/dev/null || true
+# Wait for a running copy to quit, or reopening it below fails.
+for _ in {1..20}; do pgrep -x MacLiveWallpaper >/dev/null || break; sleep 0.25; done
 rm -rf "/Applications/$APP"
 ditto "$MOUNT/$APP" "/Applications/$APP"
 xattr -dr com.apple.quarantine "/Applications/$APP" 2>/dev/null || true
 
-open "/Applications/$APP"
+open "/Applications/$APP" 2>/dev/null || { sleep 1; open "/Applications/$APP"; }
 echo "Done. Mac Live Wallpaper is running. Look for its icon in the menu bar."
