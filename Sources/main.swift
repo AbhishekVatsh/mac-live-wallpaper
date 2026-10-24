@@ -314,69 +314,33 @@ final class WallpaperController {
     }
 }
 
-// MARK: - Still frame for the system wallpaper
+// MARK: - The system wallpaper
 
-/// Remembers each display's own wallpaper before the app replaces it, so Exit and
-/// Uninstall can put it back.
-enum PreviousWallpaper {
+/// The app never changes the macOS wallpaper, so the lock screen always shows the user's
+/// own. Versions before 1.8 set the video's first frame as the wallpaper and recorded what
+/// was there before; this puts that back on any display still showing the frame.
+enum OldStillFrame {
     private static let key = "previousDesktopPictures"
-    private static let fillScreen: [NSWorkspace.DesktopImageOptionKey: Any] =
-        [.imageScaling: NSImageScaling.scaleProportionallyUpOrDown.rawValue, .allowClipping: true]
+    private static let fallback = "/System/Library/CoreServices/DefaultDesktop.heic"
 
     private static func id(of screen: NSScreen) -> String {
         (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.stringValue ?? "main"
     }
 
-    private static var saved: [String: String] {
-        get { UserDefaults.standard.dictionary(forKey: key) as? [String: String] ?? [:] }
-        set { UserDefaults.standard.set(newValue, forKey: key) }
-    }
-
-    static var isKnown: Bool { !saved.isEmpty }
-
-    /// Records the current wallpaper of every display that isn't already showing our still frame.
-    static func remember() {
-        var paths = saved
+    static func undo() {
+        let saved = UserDefaults.standard.dictionary(forKey: key) as? [String: String] ?? [:]
         for screen in NSScreen.screens {
-            guard let url = NSWorkspace.shared.desktopImageURL(for: screen),
-                  !url.path.hasPrefix(Store.folder.path) else { continue }
-            paths[id(of: screen)] = url.path
+            guard let current = NSWorkspace.shared.desktopImageURL(for: screen),
+                  current.path.hasPrefix(Store.folder.path) else { continue }
+            let path = [saved[id(of: screen)], saved.values.first, fallback]
+                .compactMap { $0 }.first { FileManager.default.fileExists(atPath: $0) } ?? fallback
+            try? NSWorkspace.shared.setDesktopImageURL(URL(fileURLWithPath: path), for: screen,
+                options: [.imageScaling: NSImageScaling.scaleProportionallyUpOrDown.rawValue, .allowClipping: true])
         }
-        saved = paths
-    }
-
-    /// Puts back the remembered wallpapers. Returns false when there's nothing to restore.
-    @discardableResult
-    static func restore() -> Bool {
-        let paths = saved
-        guard let fallback = paths.values.first else { return false }
-        for screen in NSScreen.screens {
-            let path = paths[id(of: screen)] ?? fallback
-            guard FileManager.default.fileExists(atPath: path) else { continue }
-            try? NSWorkspace.shared.setDesktopImageURL(URL(fileURLWithPath: path), for: screen, options: fillScreen)
-        }
-        return true
-    }
-}
-
-/// Sets the regular macOS wallpaper to the video's first frame so the lock screen
-/// and Mission Control match the live wallpaper.
-func setStillWallpaper(from video: URL) {
-    let generator = AVAssetImageGenerator(asset: AVURLAsset(url: video))
-    generator.appliesPreferredTrackTransform = true
-    generator.generateCGImageAsynchronously(for: .zero) { cgImage, _, _ in
-        guard let cgImage else { return }
-        let rep = NSBitmapImageRep(cgImage: cgImage)
-        guard let data = rep.representation(using: .png, properties: [:]) else { return }
-        let still = video.deletingPathExtension().appendingPathExtension("png")
-        try? data.write(to: still)
-        DispatchQueue.main.async {
-            PreviousWallpaper.remember()
-            for screen in NSScreen.screens {
-                try? NSWorkspace.shared.setDesktopImageURL(still, for: screen,
-                    options: [.imageScaling: NSImageScaling.scaleProportionallyUpOrDown.rawValue, .allowClipping: true])
-            }
-        }
+        UserDefaults.standard.removeObject(forKey: key)
+        // Remove the old still frames.
+        for file in (try? FileManager.default.contentsOfDirectory(at: Store.folder, includingPropertiesForKeys: nil)) ?? []
+            where file.pathExtension == "png" { try? FileManager.default.removeItem(at: file) }
     }
 }
 
@@ -462,11 +426,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
 
         enableStartAtLoginByDefault()
+        OldStillFrame.undo()
 
         if let video = Store.currentVideo {
             wallpaper.load(video)
-            // Exit restored the previous wallpaper, so put the still frame back.
-            setStillWallpaper(from: video)
         } else {
             showWindow()
         }
@@ -716,7 +679,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     Store.currentVideo = imported
                     Store.paused = false
                     self.wallpaper.load(imported)
-                    setStillWallpaper(from: imported)
                     self.dropView?.setText("Now playing: \(source.lastPathComponent)\n\nDrop a new video to replace it")
                     if removeSourceAfter { self.youTubeStatus?.stringValue = "Now playing: \(source.deletingPathExtension().lastPathComponent)" }
                 }
@@ -778,17 +740,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         NSApp.setActivationPolicy(.accessory)
     }
 
-    /// However the app really quits (Exit, logout), put back the wallpaper the user had before.
     func applicationWillTerminate(_ notification: Notification) {
         wallpaper.pause()
-        PreviousWallpaper.restore()
     }
 
     @objc func uninstall() {
         NSApp.activate(ignoringOtherApps: true)
         let confirm = NSAlert()
         confirm.messageText = "Uninstall Mac Live Wallpaper?"
-        confirm.informativeText = "This stops the live wallpaper, puts back your previous wallpaper, removes it from login items, deletes your imported video, and moves the app to the Bin."
+        confirm.informativeText = "This stops the live wallpaper, removes it from login items, deletes your imported video, and moves the app to the Bin. Your own wallpaper stays as it is."
         confirm.addButton(withTitle: "Uninstall")
         confirm.addButton(withTitle: "Cancel")
         confirm.buttons[0].hasDestructiveAction = true
@@ -797,23 +757,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         wallpaper.pause()
         try? SMAppService.mainApp.unregister()
 
-        // Put back the previous wallpaper. If it was never recorded, keep the still frame
-        // as the desktop picture, since its folder is about to be removed.
+        OldStillFrame.undo()
         let fm = FileManager.default
-        if !PreviousWallpaper.restore(),
-           let still = (try? fm.contentsOfDirectory(at: Store.folder, includingPropertiesForKeys: nil))?
-            .first(where: { $0.pathExtension == "png" }) {
-            let pictures = fm.urls(for: .picturesDirectory, in: .userDomainMask)[0]
-            let kept = pictures.appendingPathComponent("Mac Live Wallpaper.png")
-            try? fm.removeItem(at: kept)
-            if (try? fm.copyItem(at: still, to: kept)) != nil {
-                for screen in NSScreen.screens {
-                    try? NSWorkspace.shared.setDesktopImageURL(kept, for: screen,
-                        options: NSWorkspace.shared.desktopImageOptions(for: screen) ?? [:])
-                }
-            }
-        }
-
         try? fm.removeItem(at: Store.folder)
         if let id = Bundle.main.bundleIdentifier { UserDefaults.standard.removePersistentDomain(forName: id) }
 

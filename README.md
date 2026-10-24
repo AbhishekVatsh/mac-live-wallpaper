@@ -1,6 +1,6 @@
 # Mac Live Wallpaper
 
-Use any video as a looping live wallpaper on your Mac. It plays silently behind your desktop icons on every display, pauses while your Mac sleeps or is locked, and starts at login.
+Use any video as a looping live wallpaper on your Mac. It plays silently behind your desktop icons on every display, pauses while your Mac sleeps or is locked, and starts at login. It never changes your macOS wallpaper, so the lock screen keeps showing your own.
 
 ## Install
 
@@ -29,8 +29,8 @@ Only use videos you have the right to download.
 The app shows in the Dock and the menu bar. From the menu bar icon you can choose a new video, pause or play, and turn Start at Login on or off. The app window also has a **Start at Login** checkbox.
 
 - **Closing the window or choosing Quit from the Dock** keeps the wallpaper playing in the background. The Dock icon goes away, and the menu bar icon stays. Open the app again to bring back the window.
-- **Exit** (in the app window, the app menu, the menu bar icon, or ⌘Q) really quits and puts back the wallpaper you had before. The app starts again at your next login if Start at Login is on.
-- **Uninstall…** removes the app completely: it stops the wallpaper, puts back your previous wallpaper, removes the login item, deletes the imported video and settings, and moves the app to the Bin.
+- **Exit** (in the app window, the app menu, the menu bar icon, or ⌘Q) really quits. The app starts again at your next login if Start at Login is on.
+- **Uninstall…** removes the app completely: it stops the wallpaper, removes the login item, deletes the imported video and settings, and moves the app to the Bin.
 
 ## Build from source
 
