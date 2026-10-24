@@ -1,5 +1,7 @@
 # Mac Live Wallpaper
 
+Also for Windows: see [Windows](#windows) below.
+
 Use any video as a looping live wallpaper on your Mac. It plays silently behind your desktop icons on every display, pauses while your Mac sleeps or is locked, and starts at login. It never changes your macOS wallpaper, so the lock screen keeps showing your own.
 
 ## Install
@@ -41,3 +43,21 @@ Requires macOS 13 or later and the Xcode Command Line Tools (`xcode-select --ins
 ```
 
 This creates `build/Mac Live Wallpaper.app` and `build/MacLiveWallpaper.dmg`.
+
+## Windows
+
+**Live Wallpaper** for Windows 10 and 11 has the same features: drop or choose a video, paste a YouTube link, seamless looping behind the desktop icons on every monitor, Start at Login, and Exit and Uninstall buttons. It sits in the system tray (by the clock) instead of the menu bar.
+
+Paste this into PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/AbhishekVatsh/mac-live-wallpaper/main/windows/install.ps1 | iex
+```
+
+It downloads the latest release, installs it in `%LOCALAPPDATA%\Programs\LiveWallpaper`, adds it to the Start menu and opens it.
+
+- Videos play with [mpv](https://mpv.io), which is included. It plays every format YouTube uses, so YouTube videos download in up to 4K on any PC.
+- Closing the window keeps the wallpaper playing. Open it again from the tray icon or the Start menu.
+- The app never changes your Windows wallpaper or lock screen.
+
+To build it yourself, install the [.NET 8 SDK](https://dotnet.microsoft.com/download) and run `dotnet publish windows/LiveWallpaper.csproj -c Release -o dist`, then put `mpv.exe` in `dist/mpv`. The GitHub workflow in `.github/workflows/windows.yml` does all of this, tests it on a Windows desktop, and attaches `LiveWallpaper-Windows.zip` to each release.
