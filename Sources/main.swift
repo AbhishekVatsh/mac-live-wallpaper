@@ -2,6 +2,7 @@ import AppKit
 import AVFoundation
 import ServiceManagement
 import UniformTypeIdentifiers
+import VideoToolbox
 
 // MARK: - Storage
 
@@ -52,8 +53,17 @@ final class YouTubeDownloader {
 
     private static let toolURL = Store.folder.appendingPathComponent("bin/yt-dlp")
     private static let releaseURL = URL(string: "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_macos")!
-    // Video only (wallpapers are silent), H.264 up to 1080p so every Mac plays it smoothly.
-    private static let format = "bv*[vcodec^=avc1][height<=1080][protocol^=http]/bv*[vcodec^=avc1][height<=1080]/b[ext=mp4]"
+    /// YouTube only offers 4K as AV1 or VP9, and macOS can't play VP9. Macs with an AV1
+    /// decoder (M3 and newer) get up to 4K; older Macs get H.264 up to 1080p.
+    static let supports4K = VTIsHardwareDecodeSupported(kCMVideoCodecType_AV1)
+
+    // Video only (wallpapers are silent). Highest resolution first, AV1 preferred at equal resolution.
+    private static var formatArgs: [String] {
+        supports4K
+            ? ["-f", "bv*[vcodec~='^(av01|avc1)'][height<=2160][protocol^=http]/bv*[vcodec~='^(av01|avc1)'][height<=2160]/b[ext=mp4]",
+               "-S", "res,vcodec:av01"]
+            : ["-f", "bv*[vcodec^=avc1][height<=1080][protocol^=http]/bv*[vcodec^=avc1][height<=1080]/b[ext=mp4]"]
+    }
 
     private var process: Process?
 
@@ -126,7 +136,7 @@ final class YouTubeDownloader {
         p.executableURL = Self.toolURL
         p.arguments = [
             "--no-config", "--no-playlist", "--no-part", "--newline",
-            "-f", Self.format,
+        ] + Self.formatArgs + [
             "-o", outDir.appendingPathComponent("%(title).80B.%(ext)s").path,
             "--progress-template", "download:PROGRESS %(progress._percent_str)s",
             link.trimmingCharacters(in: .whitespaces),
@@ -212,12 +222,17 @@ final class WallpaperController {
     }
 
     func load(_ url: URL) {
+        // Fully stop the previous video so only the current one ever plays.
+        looper?.disableLooping()
+        player?.pause()
+        player?.removeAllItems()
+        looper = nil
+
         let item = AVPlayerItem(url: url)
         let queue = AVQueuePlayer()
         queue.isMuted = true
         queue.preventsDisplaySleepDuringVideoPlayback = false
         looper = AVPlayerLooper(player: queue, templateItem: item)
-        player?.pause()
         player = queue
         rebuildWindows()
         if !Store.paused { play() }
@@ -494,11 +509,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             setButton.bezelStyle = .rounded
             setButton.setContentHuggingPriority(.required, for: .horizontal)
 
-            let row = NSStackView(views: [field, setButton])
+            let pasteButton = NSButton(title: "Paste", target: self, action: #selector(pasteLink))
+            pasteButton.bezelStyle = .rounded
+            pasteButton.setContentHuggingPriority(.required, for: .horizontal)
+
+            let row = NSStackView(views: [field, pasteButton, setButton])
             row.spacing = 8
             row.translatesAutoresizingMaskIntoConstraints = false
 
-            let status = NSTextField(wrappingLabelWithString: "Downloads the video in up to 1080p, without sound.")
+            let status = NSTextField(wrappingLabelWithString: YouTubeDownloader.supports4K
+                ? "Downloads the video in up to 4K, without sound."
+                : "Downloads the video in up to 1080p, without sound. 4K needs a Mac with an M3 chip or newer.")
             status.font = .systemFont(ofSize: 11)
             status.textColor = .secondaryLabelColor
             status.translatesAutoresizingMaskIntoConstraints = false
@@ -560,6 +581,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         panel.message = "Choose a video to use as your live wallpaper"
         NSApp.activate(ignoringOtherApps: true)
         if panel.runModal() == .OK, let url = panel.url { apply(url) }
+    }
+
+    @objc func pasteLink() {
+        guard youTube == nil, let text = NSPasteboard.general.string(forType: .string) else { return }
+        linkField?.stringValue = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        youTubeStatus?.textColor = .secondaryLabelColor
+        youTubeStatus?.stringValue = YouTubeDownloader.isYouTubeLink(linkField?.stringValue ?? "")
+            ? "Click Set as Wallpaper to download it."
+            : "That isn't a YouTube link. Copy one from YouTube and try again."
     }
 
     @objc func youTubeButtonClicked() {
@@ -685,6 +715,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 }
+
+// Only one copy may run, or two different videos could play at once. A newly opened
+// copy (say, from the DMG or a newer install) takes over from any copy already running.
+let me = ProcessInfo.processInfo.processIdentifier
+let others = NSRunningApplication.runningApplications(withBundleIdentifier: Bundle.main.bundleIdentifier ?? "")
+    .filter { $0.processIdentifier != me }
+others.forEach { $0.terminate() }
+let deadline = Date().addingTimeInterval(5)
+while others.contains(where: { !$0.isTerminated }) && Date() < deadline {
+    RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+}
+others.filter { !$0.isTerminated }.forEach { $0.forceTerminate() }
 
 let app = NSApplication.shared
 let delegate = AppDelegate()
