@@ -1,0 +1,119 @@
+# Builds Live Wallpaper for Windows, tests it on a real Windows desktop, and attaches
+# LiveWallpaper-Windows.zip to each published release.
+name: Windows
+
+on:
+  push:
+    paths: ['windows/**', '.github/workflows/windows.yml']
+  workflow_dispatch:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-test:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Build
+        run: dotnet publish windows/LiveWallpaper.csproj -c Release -o dist
+
+      - name: Bundle mpv
+        run: |
+          $asset = gh api repos/shinchiro/mpv-winbuild-cmake/releases/latest `
+            --jq '.assets[] | select(.name | test("^mpv-x86_64-[0-9]{8}-git-[0-9a-f]+\\.7z$")) | .browser_download_url' |
+            Select-Object -First 1
+          Write-Host "mpv build: $asset"
+          Invoke-WebRequest $asset -OutFile mpv.7z
+          7z x mpv.7z -ompv-extract | Out-Null
+          New-Item -ItemType Directory dist/mpv | Out-Null
+          Copy-Item mpv-extract/mpv.exe dist/mpv/
+          Get-ChildItem mpv-extract -Filter *.dll | Copy-Item -Destination dist/mpv/
+          Remove-Item dist/*.pdb -ErrorAction SilentlyContinue
+          Get-ChildItem dist -Recurse | Format-Table FullName, Length
+
+      - name: Package
+        run: Compress-Archive -Path dist/* -DestinationPath LiveWallpaper-Windows.zip
+
+      - name: Test on the desktop
+        run: |
+          Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+          New-Item -ItemType Directory shots | Out-Null
+          function Shot($name) {
+            $b = [System.Windows.Forms.SystemInformation]::VirtualScreen
+            $bmp = New-Object System.Drawing.Bitmap $b.Width, $b.Height
+            [System.Drawing.Graphics]::FromImage($bmp).CopyFromScreen($b.Left, $b.Top, 0, 0, $bmp.Size)
+            $bmp.Save("shots/$name.png"); $bmp.Dispose()
+            (Get-FileHash "shots/$name.png").Hash
+          }
+          function Wallpaper { (Get-ItemProperty 'HKCU:\Control Panel\Desktop').Wallpaper }
+          $data = Join-Path $env:LOCALAPPDATA 'LiveWallpaper'
+          $before = Wallpaper
+          Write-Host "Windows: $([Environment]::OSVersion.VersionString), wallpaper before: $before"
+
+          (New-Object -ComObject Shell.Application).MinimizeAll()
+          Start-Process dist/LiveWallpaper.exe -ArgumentList '--video', (Resolve-Path windows/test/test.mp4)
+          Start-Sleep 15
+          (New-Object -ComObject Shell.Application).MinimizeAll()
+          Start-Sleep 2
+          $a = Shot '1-playing-a'; Start-Sleep -Milliseconds 700; $b = Shot '1-playing-b'
+          Write-Host "Desktop animating (screenshots differ): $($a -ne $b)"
+          Get-Process LiveWallpaper, mpv -ErrorAction SilentlyContinue | Format-Table Id, ProcessName, StartTime
+          Write-Host "Wallpaper while playing: $(Wallpaper)"
+
+          Write-Host '--- YouTube link (second copy takes over) ---'
+          $settings = Join-Path $data 'settings.json'
+          $oldVideo = (Get-Content $settings | ConvertFrom-Json).VideoFile
+          Start-Process dist/LiveWallpaper.exe -ArgumentList '--youtube', 'https://youtu.be/WhWc3b3KhnY'
+          $deadline = (Get-Date).AddMinutes(4)
+          while ((Get-Date) -lt $deadline -and (Get-Content $settings | ConvertFrom-Json).VideoFile -eq $oldVideo) { Start-Sleep 3 }
+          Write-Host "Video after YouTube: $((Get-Content $settings | ConvertFrom-Json).VideoFile) (was $oldVideo)"
+          Get-Content (Join-Path $data 'bin/last-download.log') -ErrorAction SilentlyContinue | Select-Object -Last 15
+          Start-Sleep 8
+          (New-Object -ComObject Shell.Application).MinimizeAll()
+          Start-Sleep 2
+          Shot '2-youtube' | Out-Null
+          Get-Process LiveWallpaper, mpv -ErrorAction SilentlyContinue | Format-Table Id, ProcessName, StartTime
+
+          Write-Host '--- Exit ---'
+          [System.Threading.EventWaitHandle]::OpenExisting('Local\LiveWallpaper.Exit').Set() | Out-Null
+          Start-Sleep 6
+          Write-Host "Still running after Exit: $(@(Get-Process LiveWallpaper, mpv -ErrorAction SilentlyContinue).Count)"
+          Write-Host "Wallpaper after Exit: $(Wallpaper) (before: $before)"
+          Shot '3-after-exit' | Out-Null
+
+          Write-Host '--- App log ---'
+          Get-Content (Join-Path $data 'log.txt') -ErrorAction SilentlyContinue
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: LiveWallpaper-Windows
+          path: |
+            LiveWallpaper-Windows.zip
+            shots/
+
+  release:
+    if: github.event_name == 'release'
+    needs: build-and-test
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: LiveWallpaper-Windows
+      - name: Attach to the release
+        run: gh release upload "${{ github.event.release.tag_name }}" LiveWallpaper-Windows.zip --clobber --repo "${{ github.repository }}"
