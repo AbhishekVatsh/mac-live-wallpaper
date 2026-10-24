@@ -16,7 +16,10 @@ You can also download `MacLiveWallpaper.dmg` from the [Releases](https://github.
 
 ## Use
 
-The menu bar icon lets you choose a new video, pause or play, turn Start at Login on or off, and quit.
+The menu bar icon lets you choose a new video, pause or play, and turn Start at Login on or off.
+
+- **Stop Running** (in the menu bar icon or the app window) quits the app. Your desktop keeps the video's still frame, and the app starts again at your next login if Start at Login is on.
+- **Uninstall…** removes the app completely: it stops the wallpaper, removes the login item, deletes the imported video and settings, and moves the app to the Bin. The still frame is saved to `~/Pictures/Mac Live Wallpaper.png` and stays as your desktop picture.
 
 ## Build from source
 

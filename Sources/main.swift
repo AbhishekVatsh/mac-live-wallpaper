@@ -251,13 +251,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let login = menu.addItem(withTitle: "Start at Login", action: #selector(toggleLoginItem), keyEquivalent: "")
         login.state = SMAppService.mainApp.status == .enabled ? .on : .off
         menu.addItem(.separator())
-        menu.addItem(withTitle: "Quit Mac Live Wallpaper", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
-        menu.items.forEach { if $0.action != #selector(NSApplication.terminate(_:)) { $0.target = self } }
+        menu.addItem(withTitle: "Uninstall…", action: #selector(uninstall), keyEquivalent: "")
+        menu.addItem(withTitle: "Stop Running", action: #selector(stopRunning), keyEquivalent: "q")
+        menu.items.forEach { $0.target = self }
     }
 
     @objc func showWindow() {
         if window == nil {
-            let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 420, height: 300),
+            let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 420, height: 350),
                              styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: false)
             w.title = "Mac Live Wallpaper"
             w.isReleasedWhenClosed = false
@@ -272,14 +273,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             button.keyEquivalent = "\r"
             button.translatesAutoresizingMaskIntoConstraints = false
 
-            let hint = NSTextField(wrappingLabelWithString: "The video loops silently behind your desktop icons. Use the menu bar icon to pause or quit.")
+            let hint = NSTextField(wrappingLabelWithString: "The video loops silently behind your desktop icons. Use the menu bar icon to pause it.")
             hint.font = .systemFont(ofSize: 11)
             hint.textColor = .secondaryLabelColor
             hint.alignment = .center
             hint.translatesAutoresizingMaskIntoConstraints = false
 
+            let stop = NSButton(title: "Stop Running", target: self, action: #selector(stopRunning))
+            let remove = NSButton(title: "Uninstall…", target: self, action: #selector(uninstall))
+            let actions = NSStackView(views: [stop, remove])
+            actions.spacing = 12
+            actions.translatesAutoresizingMaskIntoConstraints = false
+
             let content = NSView()
-            [drop, button, hint].forEach(content.addSubview)
+            [drop, button, hint, actions].forEach(content.addSubview)
             NSLayoutConstraint.activate([
                 drop.topAnchor.constraint(equalTo: content.topAnchor, constant: 20),
                 drop.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 20),
@@ -290,6 +297,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 hint.topAnchor.constraint(equalTo: button.bottomAnchor, constant: 12),
                 hint.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 30),
                 hint.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -30),
+                actions.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -20),
+                actions.centerXAnchor.constraint(equalTo: content.centerXAnchor),
             ])
             w.contentView = content
             window = w
@@ -345,6 +354,46 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let alert = NSAlert(error: error)
             alert.informativeText = "Move Mac Live Wallpaper to your Applications folder and try again."
             alert.runModal()
+        }
+    }
+
+    @objc func stopRunning() {
+        NSApp.terminate(nil)
+    }
+
+    @objc func uninstall() {
+        NSApp.activate(ignoringOtherApps: true)
+        let confirm = NSAlert()
+        confirm.messageText = "Uninstall Mac Live Wallpaper?"
+        confirm.informativeText = "This stops the live wallpaper, removes it from login items, deletes your imported video, and moves the app to the Bin. Your desktop keeps the video's still frame."
+        confirm.addButton(withTitle: "Uninstall")
+        confirm.addButton(withTitle: "Cancel")
+        confirm.buttons[0].hasDestructiveAction = true
+        guard confirm.runModal() == .alertFirstButtonReturn else { return }
+
+        wallpaper.pause()
+        try? SMAppService.mainApp.unregister()
+
+        // Keep the still frame as the desktop picture, since its folder is about to be removed.
+        let fm = FileManager.default
+        if let still = (try? fm.contentsOfDirectory(at: Store.folder, includingPropertiesForKeys: nil))?
+            .first(where: { $0.pathExtension == "png" }) {
+            let pictures = fm.urls(for: .picturesDirectory, in: .userDomainMask)[0]
+            let kept = pictures.appendingPathComponent("Mac Live Wallpaper.png")
+            try? fm.removeItem(at: kept)
+            if (try? fm.copyItem(at: still, to: kept)) != nil {
+                for screen in NSScreen.screens {
+                    try? NSWorkspace.shared.setDesktopImageURL(kept, for: screen,
+                        options: NSWorkspace.shared.desktopImageOptions(for: screen) ?? [:])
+                }
+            }
+        }
+
+        try? fm.removeItem(at: Store.folder)
+        if let id = Bundle.main.bundleIdentifier { UserDefaults.standard.removePersistentDomain(forName: id) }
+
+        NSWorkspace.shared.recycle([Bundle.main.bundleURL]) { _, _ in
+            DispatchQueue.main.async { NSApp.terminate(nil) }
         }
     }
 }
