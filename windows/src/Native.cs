@@ -3,13 +3,11 @@ using System.Text;
 
 namespace LiveWallpaper;
 
-/// Win32 calls for the desktop window tree and the system wallpaper.
+/// Win32 calls for the desktop window tree.
 static class Native
 {
     public const int WS_CHILD = 0x40000000, WS_VISIBLE = 0x10000000, SS_BLACKRECT = 0x4;
     public const uint SMTO_NORMAL = 0x0;
-    public const uint SPI_SETDESKWALLPAPER = 0x14, SPI_GETDESKWALLPAPER = 0x73;
-    public const uint SPIF_UPDATEINIFILE = 0x1, SPIF_SENDCHANGE = 0x2;
 
     public delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
 
@@ -48,10 +46,4 @@ static class Native
 
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     public static extern uint RegisterWindowMessage(string name);
-
-    [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-    public static extern bool SystemParametersInfo(uint action, uint param, string value, uint flags);
-
-    [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-    public static extern bool SystemParametersInfo(uint action, uint param, StringBuilder value, uint flags);
 }

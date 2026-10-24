@@ -71,7 +71,7 @@ jobs:
           $a = Shot '1-playing-a'; Start-Sleep -Milliseconds 700; $b = Shot '1-playing-b'
           Write-Host "Desktop animating (screenshots differ): $($a -ne $b)"
           Get-Process LiveWallpaper, mpv -ErrorAction SilentlyContinue | Format-Table Id, ProcessName, StartTime
-          Write-Host "Wallpaper while playing: $(Wallpaper)"
+          Write-Host "Wallpaper while playing: $(Wallpaper) (should be unchanged: $before)"
 
           Write-Host '--- YouTube link (second copy takes over) ---'
           $settings = Join-Path $data 'settings.json'
@@ -91,7 +91,7 @@ jobs:
           [System.Threading.EventWaitHandle]::OpenExisting('Local\LiveWallpaper.Exit').Set() | Out-Null
           Start-Sleep 6
           Write-Host "Still running after Exit: $(@(Get-Process LiveWallpaper, mpv -ErrorAction SilentlyContinue).Count)"
-          Write-Host "Wallpaper after Exit: $(Wallpaper) (before: $before)"
+          Write-Host "Wallpaper after Exit: $(Wallpaper) (should be unchanged: $before)"
           Shot '3-after-exit' | Out-Null
 
           Write-Host '--- App log ---'

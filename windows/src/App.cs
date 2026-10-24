@@ -52,8 +52,6 @@ sealed class App : ApplicationContext
         if (Store.CurrentVideo is { } video)
         {
             host.Load(video, Store.Settings.Paused);
-            // Exit restored the previous wallpaper, so put the still frame back.
-            Wallpaper.SetStill(video);
         }
         else
         {
@@ -101,7 +99,6 @@ sealed class App : ApplicationContext
                     Store.Settings.Paused = false;
                     Store.Save();
                     host.Load(imported, startPaused: false);
-                    Wallpaper.SetStill(imported);
                     form.SetDropText($"Now playing: {Path.GetFileName(source)}\n\nDrop a new video to replace it");
                     if (removeSourceFolderAfter) form.SetStatus($"Now playing: {Path.GetFileNameWithoutExtension(source)}");
                 });
@@ -152,13 +149,12 @@ sealed class App : ApplicationContext
 
     void OnDisplaySettingsChanged(object? sender, EventArgs e) => form.BeginInvoke(host.Rebuild);
 
-    /// Really quits, and puts back the wallpaper the user had before.
+    /// Really quits. The app never changes the Windows wallpaper, so your own shows again.
     public void Exit()
     {
         if (IsExiting) return;
         IsExiting = true;
         host.Stop();
-        Wallpaper.RestorePrevious();
         Shutdown();
     }
 
@@ -177,23 +173,14 @@ sealed class App : ApplicationContext
     {
         ShowWindow();
         var answer = MessageBox.Show(form,
-            "This stops the live wallpaper, puts back your previous wallpaper, removes it from startup apps, " +
-            "deletes your imported video, and removes the app.",
+            "This stops the live wallpaper, removes it from startup apps, deletes your imported video, " +
+            "and removes the app. Your own wallpaper stays as it is.",
             "Uninstall Live Wallpaper?", MessageBoxButtons.OKCancel, MessageBoxIcon.Question, MessageBoxDefaultButton.Button2);
         if (answer != DialogResult.OK) return;
 
         IsExiting = true;
         host.Stop();
         try { StartAtLogin.Set(false); } catch { }
-
-        // Put back the previous wallpaper from a copy outside the folder that's about to be deleted.
-        if (Store.Settings.PreviousWallpaper is { ImageCopy: { } copy } info && File.Exists(copy))
-        {
-            var pictures = Environment.GetFolderPath(Environment.SpecialFolder.MyPictures);
-            var kept = Path.Combine(pictures, "Wallpaper before Live Wallpaper" + Path.GetExtension(copy));
-            try { File.Copy(copy, kept, overwrite: true); info.ImageCopy = kept; } catch { }
-        }
-        Wallpaper.RestorePrevious();
 
         Store.TryDelete(Store.StartMenuShortcut);
         try { Directory.Delete(Store.Folder, recursive: true); } catch { }

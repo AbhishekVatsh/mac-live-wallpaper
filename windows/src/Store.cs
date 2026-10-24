@@ -6,7 +6,7 @@ namespace LiveWallpaper;
 /// Settings, the imported video, and where things live on disk.
 static class Store
 {
-    /// %LOCALAPPDATA%\LiveWallpaper: the imported video, its still frame, yt-dlp and settings.
+    /// %LOCALAPPDATA%\LiveWallpaper: the imported video, yt-dlp and settings.
     public static readonly string Folder =
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "LiveWallpaper");
 
@@ -25,15 +25,6 @@ static class Store
         public string? VideoFile { get; set; }
         public bool Paused { get; set; }
         public bool StartAtLoginDefaultApplied { get; set; }
-        public PreviousWallpaperInfo? PreviousWallpaper { get; set; }
-    }
-
-    public sealed class PreviousWallpaperInfo
-    {
-        /// A copy of the user's own wallpaper image, or null if they had a plain color.
-        public string? ImageCopy { get; set; }
-        public string? Style { get; set; }
-        public string? Tile { get; set; }
     }
 
     public static Data Settings { get; private set; } = Load();
@@ -73,7 +64,7 @@ static class Store
         Directory.CreateDirectory(Folder);
         var dest = Path.Combine(Folder, $"wallpaper-{DateTimeOffset.UtcNow.ToUnixTimeSeconds()}{Path.GetExtension(source)}");
         File.Copy(source, dest, overwrite: true);
-        // Remove previously imported videos and their still frames.
+        // Remove previously imported videos.
         foreach (var old in Directory.GetFiles(Folder, "wallpaper-*"))
             if (!string.Equals(old, dest, StringComparison.OrdinalIgnoreCase)) TryDelete(old);
         return dest;
