@@ -221,6 +221,8 @@ final class WallpaperController {
         dnc.addObserver(self, selector: #selector(systemWake), name: .init("com.apple.screenIsUnlocked"), object: nil)
     }
 
+    private var loading: UUID?
+
     func load(_ url: URL) {
         // Fully stop the previous video so only the current one ever plays.
         looper?.disableLooping()
@@ -228,14 +230,42 @@ final class WallpaperController {
         player?.removeAllItems()
         looper = nil
 
-        let item = AVPlayerItem(url: url)
-        let queue = AVQueuePlayer()
-        queue.isMuted = true
-        queue.preventsDisplaySleepDuringVideoPlayback = false
-        looper = AVPlayerLooper(player: queue, templateItem: item)
-        player = queue
-        rebuildWindows()
-        if !Store.paused { play() }
+        let asset = AVURLAsset(url: url)
+        let token = UUID()
+        loading = token
+        Task { @MainActor in
+            let range = await Self.loopRange(of: asset)
+            guard self.loading == token else { return }   // a newer video was chosen meanwhile
+            let queue = AVQueuePlayer()
+            queue.isMuted = true
+            queue.preventsDisplaySleepDuringVideoPlayback = false
+            self.looper = AVPlayerLooper(player: queue, templateItem: AVPlayerItem(asset: asset), timeRange: range)
+            self.player = queue
+            self.rebuildWindows()
+            if !Store.paused { self.play() }
+        }
+    }
+
+    /// The part of the video to loop: from the start to the last real video frame.
+    /// YouTube's files (4K ones especially) often claim to be longer than they are, and
+    /// other videos can have a soundtrack that runs past the picture. Looping the whole
+    /// stated length would hold the last frame for that extra time before restarting.
+    static func loopRange(of asset: AVURLAsset) async -> CMTimeRange {
+        guard let duration = try? await asset.load(.duration),
+              let track = try? await asset.loadTracks(withMediaType: .video).first else { return .invalid }
+        var end = duration
+        if let trackRange = try? await track.load(.timeRange), trackRange.duration > .zero {
+            end = CMTimeMinimum(end, trackRange.end)
+        }
+        if (try? await track.load(.canProvideSampleCursors)) == true, let cursor = track.makeSampleCursorAtLastSampleInDecodeOrder() {
+            // Frames can be stored out of display order, so check the last few for the latest one.
+            var lastFrameEnd = CMTimeAdd(cursor.presentationTimeStamp, cursor.currentSampleDuration)
+            for _ in 0..<16 where cursor.stepInDecodeOrder(byCount: -1) == -1 {
+                lastFrameEnd = CMTimeMaximum(lastFrameEnd, CMTimeAdd(cursor.presentationTimeStamp, cursor.currentSampleDuration))
+            }
+            if lastFrameEnd > .zero { end = CMTimeMinimum(end, lastFrameEnd) }
+        }
+        return end > .zero ? CMTimeRange(start: .zero, end: end) : .invalid
     }
 
     func play() {
